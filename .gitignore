@@ -1,0 +1,24 @@
+# ESP-IDF build artifacts
+build/
+sdkconfig.old
+
+# Secrets
+main/secrets.h
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VS Code
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ESP-IDF managed components
+managed_components/
+dependencies.lock
