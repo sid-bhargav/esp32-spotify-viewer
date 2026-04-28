@@ -4,6 +4,7 @@ sdkconfig.old
 
 # Secrets
 main/secrets.h
+secrets.json
 
 # macOS
 .DS_Store
