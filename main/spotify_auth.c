@@ -210,6 +210,12 @@ esp_err_t spotify_auth_get_token(char *buf, size_t buf_len)
     }
 
     strncpy(buf, s_access_token, buf_len - 1);
-    buf[buf_len - 1] = '\0'; // guarantee null termination
+    buf[buf_len - 1] = '\0';
     return ESP_OK;
+}
+
+void spotify_auth_invalidate(void)
+{
+    s_access_token[0] = '\0';
+    s_expiry_unix = 0;
 }

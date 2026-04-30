@@ -78,7 +78,12 @@ esp_err_t spotify_api_get_playback(spotify_playback_t *out)
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
-    if (err != ESP_OK)
+    // ESP-IDF returns ESP_ERR_NOT_SUPPORTED when it receives a 401 with
+    // WWW-Authenticate: Bearer — it tries to handle the challenge internally
+    // but doesn't support the Bearer scheme. The status code is still valid,
+    // so fall through to the status checks below instead of treating it as a
+    // hard failure.
+    if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED)
     {
         ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
         free(response_buf);
@@ -94,7 +99,8 @@ esp_err_t spotify_api_get_playback(spotify_playback_t *out)
 
     if (status == 401)
     {
-        ESP_LOGW(TAG, "Token rejected, will refresh on next call");
+        ESP_LOGW(TAG, "Token rejected by Spotify, forcing refresh");
+        spotify_auth_invalidate();
         free(response_buf);
         return ESP_ERR_INVALID_STATE;
     }
