@@ -1,0 +1,339 @@
+#include "display.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "driver/gpio.h"
+#include "driver/spi_master.h"
+#include "esp_log.h"
+#include "esp_check.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <stdlib.h>
+
+#define SPI_MOSI 11
+#define SPI_MISO 13
+#define SPI_CLK 12
+#define SPI_CS 10
+#define LCD_DC 9
+#define LCD_RST 8
+#define LCD_BL 7
+
+#define LCD_SPI_HOST SPI2_HOST
+#define LCD_SPI_CLK_HZ (27 * 1000 * 1000)
+
+// ST7735R command set
+#define ST7735_SWRESET 0x01
+#define ST7735_SLPOUT 0x11
+#define ST7735_NORON 0x13
+#define ST7735_INVOFF 0x20
+#define ST7735_DISPON 0x29
+#define ST7735_CASET 0x2A
+#define ST7735_RASET 0x2B
+#define ST7735_RAMWR 0x2C
+#define ST7735_MADCTL 0x36
+#define ST7735_COLMOD 0x3A
+#define ST7735_FRMCTR1 0xB1
+#define ST7735_FRMCTR2 0xB2
+#define ST7735_FRMCTR3 0xB3
+#define ST7735_INVCTR 0xB4
+#define ST7735_PWCTR1 0xC0
+#define ST7735_PWCTR2 0xC1
+#define ST7735_PWCTR3 0xC2
+#define ST7735_PWCTR4 0xC3
+#define ST7735_PWCTR5 0xC4
+#define ST7735_VMCTR1 0xC5
+#define ST7735_GMCTRP1 0xE0
+#define ST7735_GMCTRN1 0xE1
+
+// No GRAM offset — visible area starts at (0, 0)
+#define COL_OFFSET 0
+#define ROW_OFFSET 0
+
+static const char *TAG = "display";
+static esp_lcd_panel_io_handle_t s_io = NULL;
+
+// Adafruit GFX 5x8 font — ASCII 0x20 through 0x7E (95 chars)
+// Column-major: each byte is one column of 8 pixels, bit 0 = top pixel.
+#define FONT_FIRST 0x20
+#define FONT_LAST 0x7E
+static const uint8_t s_font[95][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // ' '
+    {0x00, 0x00, 0x5F, 0x00, 0x00}, // '!'
+    {0x00, 0x07, 0x00, 0x07, 0x00}, // '"'
+    {0x14, 0x7F, 0x14, 0x7F, 0x14}, // '#'
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, // '$'
+    {0x23, 0x13, 0x08, 0x64, 0x62}, // '%'
+    {0x36, 0x49, 0x55, 0x22, 0x50}, // '&'
+    {0x00, 0x05, 0x03, 0x00, 0x00}, // '''
+    {0x00, 0x1C, 0x22, 0x41, 0x00}, // '('
+    {0x00, 0x41, 0x22, 0x1C, 0x00}, // ')'
+    {0x08, 0x2A, 0x1C, 0x2A, 0x08}, // '*'
+    {0x08, 0x08, 0x3E, 0x08, 0x08}, // '+'
+    {0x00, 0x50, 0x30, 0x00, 0x00}, // ','
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // '-'
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // '.'
+    {0x20, 0x10, 0x08, 0x04, 0x02}, // '/'
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // '0'
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // '1'
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // '2'
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // '3'
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // '4'
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // '5'
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // '6'
+    {0x01, 0x71, 0x09, 0x05, 0x03}, // '7'
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // '8'
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, // '9'
+    {0x00, 0x36, 0x36, 0x00, 0x00}, // ':'
+    {0x00, 0x56, 0x36, 0x00, 0x00}, // ';'
+    {0x00, 0x08, 0x14, 0x22, 0x41}, // '<'
+    {0x14, 0x14, 0x14, 0x14, 0x14}, // '='
+    {0x41, 0x22, 0x14, 0x08, 0x00}, // '>'
+    {0x02, 0x01, 0x51, 0x09, 0x06}, // '?'
+    {0x32, 0x49, 0x79, 0x41, 0x3E}, // '@'
+    {0x7E, 0x11, 0x11, 0x11, 0x7E}, // 'A'
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // 'B'
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, // 'C'
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, // 'D'
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // 'E'
+    {0x7F, 0x09, 0x09, 0x01, 0x01}, // 'F'
+    {0x3E, 0x41, 0x41, 0x51, 0x32}, // 'G'
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // 'H'
+    {0x00, 0x41, 0x7F, 0x41, 0x00}, // 'I'
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, // 'J'
+    {0x7F, 0x08, 0x14, 0x22, 0x41}, // 'K'
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // 'L'
+    {0x7F, 0x02, 0x04, 0x02, 0x7F}, // 'M'
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, // 'N'
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // 'O'
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // 'P'
+    {0x3E, 0x41, 0x51, 0x21, 0x5E}, // 'Q'
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, // 'R'
+    {0x46, 0x49, 0x49, 0x49, 0x31}, // 'S'
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, // 'T'
+    {0x3F, 0x40, 0x40, 0x40, 0x3F}, // 'U'
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, // 'V'
+    {0x7F, 0x20, 0x18, 0x20, 0x7F}, // 'W'
+    {0x63, 0x14, 0x08, 0x14, 0x63}, // 'X'
+    {0x03, 0x04, 0x78, 0x04, 0x03}, // 'Y'
+    {0x61, 0x51, 0x49, 0x45, 0x43}, // 'Z'
+    {0x00, 0x00, 0x7F, 0x41, 0x41}, // '['
+    {0x02, 0x04, 0x08, 0x10, 0x20}, // '\'
+    {0x41, 0x41, 0x7F, 0x00, 0x00}, // ']'
+    {0x04, 0x02, 0x01, 0x02, 0x04}, // '^'
+    {0x40, 0x40, 0x40, 0x40, 0x40}, // '_'
+    {0x00, 0x01, 0x02, 0x04, 0x00}, // '`'
+    {0x20, 0x54, 0x54, 0x54, 0x78}, // 'a'
+    {0x7F, 0x48, 0x44, 0x44, 0x38}, // 'b'
+    {0x38, 0x44, 0x44, 0x44, 0x20}, // 'c'
+    {0x38, 0x44, 0x44, 0x48, 0x7F}, // 'd'
+    {0x38, 0x54, 0x54, 0x54, 0x18}, // 'e'
+    {0x08, 0x7E, 0x09, 0x01, 0x02}, // 'f'
+    {0x08, 0x14, 0x54, 0x54, 0x3C}, // 'g'
+    {0x7F, 0x08, 0x04, 0x04, 0x78}, // 'h'
+    {0x00, 0x44, 0x7D, 0x40, 0x00}, // 'i'
+    {0x20, 0x40, 0x44, 0x3D, 0x00}, // 'j'
+    {0x00, 0x7F, 0x10, 0x28, 0x44}, // 'k'
+    {0x00, 0x41, 0x7F, 0x40, 0x00}, // 'l'
+    {0x7C, 0x04, 0x18, 0x04, 0x78}, // 'm'
+    {0x7C, 0x08, 0x04, 0x04, 0x78}, // 'n'
+    {0x38, 0x44, 0x44, 0x44, 0x38}, // 'o'
+    {0x7C, 0x14, 0x14, 0x14, 0x08}, // 'p'
+    {0x08, 0x14, 0x14, 0x18, 0x7C}, // 'q'
+    {0x7C, 0x08, 0x04, 0x04, 0x08}, // 'r'
+    {0x48, 0x54, 0x54, 0x54, 0x20}, // 's'
+    {0x04, 0x3F, 0x44, 0x40, 0x20}, // 't'
+    {0x3C, 0x40, 0x40, 0x20, 0x7C}, // 'u'
+    {0x1C, 0x20, 0x40, 0x20, 0x1C}, // 'v'
+    {0x3C, 0x40, 0x30, 0x40, 0x3C}, // 'w'
+    {0x44, 0x28, 0x10, 0x28, 0x44}, // 'x'
+    {0x0C, 0x50, 0x50, 0x50, 0x3C}, // 'y'
+    {0x44, 0x64, 0x54, 0x4C, 0x44}, // 'z'
+    {0x00, 0x08, 0x36, 0x41, 0x00}, // '{'
+    {0x00, 0x00, 0x7F, 0x00, 0x00}, // '|'
+    {0x00, 0x41, 0x36, 0x08, 0x00}, // '}'
+    {0x08, 0x08, 0x2A, 0x1C, 0x08}, // '~'
+};
+
+static inline void lcd_cmd(uint8_t cmd, const uint8_t *data, size_t len)
+{
+    esp_lcd_panel_io_tx_param(s_io, cmd, data, len);
+}
+
+static void st7735r_init_sequence(void)
+{
+    lcd_cmd(ST7735_SWRESET, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    lcd_cmd(ST7735_SLPOUT, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    lcd_cmd(ST7735_FRMCTR1, (uint8_t[]){0x01, 0x2C, 0x2D}, 3);
+    lcd_cmd(ST7735_FRMCTR2, (uint8_t[]){0x01, 0x2C, 0x2D}, 3);
+    lcd_cmd(ST7735_FRMCTR3, (uint8_t[]){0x01, 0x2C, 0x2D, 0x01, 0x2C, 0x2D}, 6);
+    lcd_cmd(ST7735_INVCTR, (uint8_t[]){0x07}, 1);
+
+    lcd_cmd(ST7735_PWCTR1, (uint8_t[]){0xA2, 0x02, 0x84}, 3);
+    lcd_cmd(ST7735_PWCTR2, (uint8_t[]){0xC5}, 1);
+    lcd_cmd(ST7735_PWCTR3, (uint8_t[]){0x0A, 0x00}, 2);
+    lcd_cmd(ST7735_PWCTR4, (uint8_t[]){0x8A, 0x2A}, 2);
+    lcd_cmd(ST7735_PWCTR5, (uint8_t[]){0x8A, 0xEE}, 2);
+    lcd_cmd(ST7735_VMCTR1, (uint8_t[]){0x0E}, 1);
+
+    lcd_cmd(ST7735_INVOFF, NULL, 0);
+    // MX | MY | BGR — portrait orientation, correct color order
+    lcd_cmd(ST7735_MADCTL, (uint8_t[]){0xC8}, 1);
+    // 18-bit RGB666
+    lcd_cmd(ST7735_COLMOD, (uint8_t[]){0x06}, 1);
+
+    lcd_cmd(ST7735_GMCTRP1, (uint8_t[]){0x02, 0x1C, 0x07, 0x12, 0x37, 0x32, 0x29, 0x2D, 0x29, 0x25, 0x2B, 0x39, 0x00, 0x01, 0x03, 0x10}, 16);
+    lcd_cmd(ST7735_GMCTRN1, (uint8_t[]){0x03, 0x1D, 0x07, 0x06, 0x2E, 0x2C, 0x29, 0x2D, 0x2E, 0x2E, 0x37, 0x3F, 0x00, 0x00, 0x02, 0x10}, 16);
+
+    lcd_cmd(ST7735_NORON, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    lcd_cmd(ST7735_DISPON, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
+}
+
+static void set_window(int x, int y, int w, int h)
+{
+    lcd_cmd(ST7735_CASET, (uint8_t[]){0x00, (uint8_t)(x + COL_OFFSET), 0x00, (uint8_t)(x + w - 1 + COL_OFFSET)}, 4);
+    lcd_cmd(ST7735_RASET, (uint8_t[]){0x00, (uint8_t)(y + ROW_OFFSET), 0x00, (uint8_t)(y + h - 1 + ROW_OFFSET)}, 4);
+}
+
+esp_err_t display_init(void)
+{
+    spi_bus_config_t buscfg = {
+        .mosi_io_num = SPI_MOSI,
+        .miso_io_num = SPI_MISO,
+        .sclk_io_num = SPI_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = DISPLAY_WIDTH * 3 * 16, // 16 rows at a time, 3 bytes/pixel
+    };
+    ESP_RETURN_ON_ERROR(
+        spi_bus_initialize(LCD_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO),
+        TAG, "SPI bus init failed");
+
+    esp_lcd_panel_io_spi_config_t io_cfg = {
+        .dc_gpio_num = LCD_DC,
+        .cs_gpio_num = SPI_CS,
+        .pclk_hz = LCD_SPI_CLK_HZ,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+        .spi_mode = 0,
+        .trans_queue_depth = 10,
+    };
+    ESP_RETURN_ON_ERROR(
+        esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI_HOST, &io_cfg, &s_io),
+        TAG, "Panel IO init failed");
+
+    // Hardware reset
+    gpio_set_direction(LCD_RST, GPIO_MODE_OUTPUT);
+    gpio_set_level(LCD_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(LCD_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(120));
+
+    // Backlight on
+    gpio_set_direction(LCD_BL, GPIO_MODE_OUTPUT);
+    gpio_set_level(LCD_BL, 1);
+
+    st7735r_init_sequence();
+
+    // Clear full 132x162 GRAM (includes the 2-col / 1-row offset borders that
+    // hold uninitialized data after reset and otherwise show as rainbow static).
+    lcd_cmd(ST7735_CASET, (uint8_t[]){0x00, 0x00, 0x00, 0x83}, 4);
+    lcd_cmd(ST7735_RASET, (uint8_t[]){0x00, 0x00, 0x00, 0xA1}, 4);
+    size_t gram_pixels = 132 * 162;
+    uint8_t *gram_buf = calloc(gram_pixels * 3, 1);
+    if (gram_buf)
+    {
+        esp_lcd_panel_io_tx_color(s_io, ST7735_RAMWR, gram_buf, gram_pixels * 3);
+        free(gram_buf);
+    }
+
+    ESP_LOGI(TAG, "ST7735R ready (%dx%d)", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    return ESP_OK;
+}
+
+// bitmap must be packed RGB888 (3 bytes per pixel: R, G, B)
+void display_draw_bitmap(int x, int y, int w, int h, const uint8_t *bitmap)
+{
+    set_window(x, y, w, h);
+    esp_lcd_panel_io_tx_color(s_io, ST7735_RAMWR, bitmap, w * h * 3);
+}
+
+// Writes one row at a time to stay within a small stack/heap footprint
+void display_fill_rect(int x, int y, int w, int h, uint32_t color)
+{
+    uint8_t r = (color >> 16) & 0xFF;
+    uint8_t g = (color >> 8) & 0xFF;
+    uint8_t b = color & 0xFF;
+
+    uint8_t *row = malloc(w * 3);
+    if (!row)
+    {
+        ESP_LOGE(TAG, "fill_rect: out of memory");
+        return;
+    }
+    for (int i = 0; i < w; i++)
+    {
+        row[i * 3 + 0] = r;
+        row[i * 3 + 1] = g;
+        row[i * 3 + 2] = b;
+    }
+
+    for (int cur_y = y; cur_y < y + h; cur_y++)
+    {
+        set_window(x, cur_y, w, 1);
+        esp_lcd_panel_io_tx_color(s_io, ST7735_RAMWR, row, w * 3);
+    }
+    free(row);
+}
+
+void display_clear(uint32_t color)
+{
+    display_fill_rect(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, color);
+}
+
+void display_draw_pixel(int x, int y, uint32_t color)
+{
+    display_fill_rect(x, y, 1, 1, color);
+}
+
+void display_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg)
+{
+    if (c < FONT_FIRST || c > FONT_LAST)
+        c = '?';
+    const uint8_t *glyph = s_font[(uint8_t)c - FONT_FIRST];
+
+    // Render into a row-major 6×8 buffer on the stack (144 bytes)
+    uint8_t buf[FONT_H * FONT_W * 3];
+    int idx = 0;
+    for (int row = 0; row < FONT_H; row++)
+    {
+        for (int col = 0; col < FONT_W; col++)
+        {
+            uint32_t px = (col < FONT_W - 1 && (glyph[col] & (1 << row))) ? fg : bg;
+            buf[idx++] = (px >> 16) & 0xFF;
+            buf[idx++] = (px >> 8) & 0xFF;
+            buf[idx++] = px & 0xFF;
+        }
+    }
+
+    display_draw_bitmap(x, y, FONT_W, FONT_H, buf);
+}
+
+void display_draw_text(int x, int y, const char *text, uint32_t fg, uint32_t bg)
+{
+    while (*text)
+    {
+        display_draw_char(x, y, *text++, fg, bg);
+        x += FONT_W;
+    }
+}
+
+esp_lcd_panel_io_handle_t display_get_io(void)
+{
+    return s_io;
+}
