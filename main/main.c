@@ -121,7 +121,7 @@ static void display_render_playback(const spotify_playback_t *p)
                 display_clear(palette[1]);
                 display_draw_bitmap(32, 32, img_w, img_h, rgb_buf);
                 free(rgb_buf);
-                ESP_LOGI(TAG, "Dominant Color: %d", palette[1]);
+                ESP_LOGI(TAG, "Dominant Color: %d", palette[0]);
             }
         }
         else
