@@ -7,6 +7,7 @@
 #include "spotify_auth.h"
 #include "spotify_api.h"
 #include "display.h"
+#include "tjpgd.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -14,14 +15,121 @@
 #define SPOTIFY_TASK_STACK_SIZE (16 * 1024)
 #define POLL_INTERVAL_MS 5000
 
+#define MAX_LINE_LENGTH 21
+
 static const char *TAG = "spotify_player";
+static char last_art_url[128];
+
+#define TJPGD_WORK_SZ 3100
+
+typedef struct
+{
+    const uint8_t *data;
+    size_t len;
+    size_t pos;
+    uint8_t *out_buf;
+    uint16_t out_width;
+} jpeg_ctx_t;
+
+static size_t tjpgd_input_cb(JDEC *jd, uint8_t *buf, size_t len)
+{
+    jpeg_ctx_t *ctx = (jpeg_ctx_t *)jd->device;
+    size_t remaining = ctx->len - ctx->pos;
+    if (len > remaining)
+        len = remaining;
+    if (buf)
+        memcpy(buf, ctx->data + ctx->pos, len);
+    ctx->pos += len;
+    return len;
+}
+
+static int tjpgd_output_cb(JDEC *jd, void *bitmap, JRECT *rect)
+{
+    jpeg_ctx_t *ctx = (jpeg_ctx_t *)jd->device;
+    uint8_t *src = (uint8_t *)bitmap;
+    uint16_t rect_w = rect->right - rect->left + 1;
+    uint16_t rect_h = rect->bottom - rect->top + 1;
+
+    for (uint16_t row = 0; row < rect_h; row++)
+    {
+        uint8_t *dst = ctx->out_buf + ((rect->top + row) * ctx->out_width + rect->left) * 3;
+        uint8_t *s   = src + row * rect_w * 3;
+        for (uint16_t col = 0; col < rect_w; col++, dst += 3, s += 3)
+        {
+            dst[0] = s[2]; // B
+            dst[1] = s[1]; // G
+            dst[2] = s[0]; // R
+        }
+    }
+    return 1;
+}
+
+// Decodes a JPEG into a heap-allocated RGB888 buffer. Returns NULL on failure.
+// Caller must free() the returned buffer.
+static uint8_t *jpeg_decode(const uint8_t *jpeg_buf, size_t jpeg_len, uint16_t *out_w, uint16_t *out_h)
+{
+    uint8_t work[TJPGD_WORK_SZ];
+    JDEC jdec;
+    jpeg_ctx_t ctx = {.data = jpeg_buf, .len = jpeg_len, .pos = 0};
+
+    if (jd_prepare(&jdec, tjpgd_input_cb, work, sizeof(work), &ctx) != JDR_OK)
+    {
+        ESP_LOGE(TAG, "JPEG prepare failed");
+        return NULL;
+    }
+
+    *out_w = jdec.width;
+    *out_h = jdec.height;
+
+    ctx.out_buf = malloc(jdec.width * jdec.height * 3);
+    if (!ctx.out_buf)
+    {
+        ESP_LOGE(TAG, "No memory for decoded JPEG");
+        return NULL;
+    }
+    ctx.out_width = jdec.width;
+
+    if (jd_decomp(&jdec, tjpgd_output_cb, 0) != JDR_OK)
+    {
+        ESP_LOGE(TAG, "JPEG decode failed");
+        free(ctx.out_buf);
+        return NULL;
+    }
+
+    return ctx.out_buf;
+}
 
 static void display_render_playback(const spotify_playback_t *p)
 {
-    display_clear(COLOR_BLACK);
-    display_draw_text(2, 4, p->track_name, COLOR_GREEN, COLOR_BLACK);
-    display_draw_text(2, 14, p->artist_name, COLOR_WHITE, COLOR_BLACK);
-    display_draw_text(2, 24, p->album_name, COLOR_GRAY, COLOR_BLACK);
+    if (strcmp(last_art_url, p->album_art.url) != 0)
+    {
+        display_clear(COLOR_BLACK);
+
+        uint8_t *jpeg_buf = NULL;
+        size_t jpeg_len = 0;
+
+        if (spotify_api_fetch_album_art(p->album_art.url, &jpeg_buf, &jpeg_len) == ESP_OK)
+        {
+            uint16_t img_w = 0, img_h = 0;
+            uint8_t *rgb_buf = jpeg_decode(jpeg_buf, jpeg_len, &img_w, &img_h);
+            free(jpeg_buf);
+
+            if (rgb_buf)
+            {
+                display_draw_bitmap(0, 0, img_w, img_h, rgb_buf);
+                free(rgb_buf);
+            }
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Error pulling album art from server.");
+        }
+
+        display_draw_text(2, 68, p->track_name, COLOR_GREEN, COLOR_BLACK);
+        display_draw_text(2, 78, p->artist_name, COLOR_WHITE, COLOR_BLACK);
+        display_draw_text(2, 88, p->album_name, COLOR_GRAY, COLOR_BLACK);
+    }
+    strcpy(last_art_url, p->album_art.url);
 }
 
 static void spotify_task(void *arg)
@@ -43,12 +151,13 @@ static void spotify_task(void *arg)
 
         if (err == ESP_OK)
         {
-            ESP_LOGI(TAG, "%s - %s (%s) [%d/%d ms]",
+            ESP_LOGI(TAG, "%s - %s (%s) [%d/%d ms] art url: %s",
                      playback.track_name,
                      playback.artist_name,
                      playback.album_name,
                      playback.progress_ms,
-                     playback.duration_ms);
+                     playback.duration_ms,
+                     playback.album_art.url);
             display_render_playback(&playback);
         }
         else if (err == ESP_ERR_NOT_FOUND)
