@@ -53,7 +53,7 @@ static int tjpgd_output_cb(JDEC *jd, void *bitmap, JRECT *rect)
     for (uint16_t row = 0; row < rect_h; row++)
     {
         uint8_t *dst = ctx->out_buf + ((rect->top + row) * ctx->out_width + rect->left) * 3;
-        uint8_t *s   = src + row * rect_w * 3;
+        uint8_t *s = src + row * rect_w * 3;
         for (uint16_t col = 0; col < rect_w; col++, dst += 3, s += 3)
         {
             dst[0] = s[2]; // B
