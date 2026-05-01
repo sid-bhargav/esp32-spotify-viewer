@@ -44,6 +44,24 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+static esp_err_t art_event_handler(esp_http_client_event_t *evt)
+{
+    http_response_t *resp = (http_response_t *)evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_DATA)
+    {
+        if (resp->bytes_written + evt->data_len <= resp->buf_size)
+        {
+            memcpy(resp->buf + resp->bytes_written, evt->data, evt->data_len);
+            resp->bytes_written += evt->data_len;
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Album art buffer full, truncating");
+        }
+    }
+    return ESP_OK;
+}
+
 esp_err_t spotify_api_get_playback(spotify_playback_t *out)
 {
     char token[512] = {0};
@@ -130,6 +148,13 @@ esp_err_t spotify_api_get_playback(spotify_playback_t *out)
 
     cJSON *album = cJSON_GetObjectItem(item, "album");
     cJSON *artists = cJSON_GetObjectItem(item, "artists");
+
+    cJSON *images = cJSON_GetObjectItem(album, "images");
+    cJSON *album_art_64 = cJSON_GetArrayItem(images, 2);
+    cJSON *album_art_url = cJSON_GetObjectItem(album_art_64, "url");
+    cJSON *album_art_h = cJSON_GetObjectItem(album_art_64, "height");
+    cJSON *album_art_w = cJSON_GetObjectItem(album_art_64, "width");
+
     cJSON *first_artist = cJSON_GetArrayItem(artists, 0);
     cJSON *track_name = cJSON_GetObjectItem(item, "name");
     cJSON *album_name = cJSON_GetObjectItem(album, "name");
@@ -139,7 +164,7 @@ esp_err_t spotify_api_get_playback(spotify_playback_t *out)
 
     if (!cJSON_IsString(track_name) || !cJSON_IsString(album_name) ||
         !cJSON_IsString(artist_name) || !cJSON_IsNumber(duration) ||
-        !cJSON_IsNumber(progress))
+        !cJSON_IsNumber(progress) || !cJSON_IsString(album_art_url) || !cJSON_IsNumber(album_art_h) || !cJSON_IsNumber(album_art_w))
     {
         ESP_LOGE(TAG, "Missing expected fields in playback JSON");
         cJSON_Delete(root);
@@ -152,7 +177,61 @@ esp_err_t spotify_api_get_playback(spotify_playback_t *out)
     strncpy(out->track_name, track_name->valuestring, sizeof(out->track_name) - 1);
     strncpy(out->album_name, album_name->valuestring, sizeof(out->album_name) - 1);
     strncpy(out->artist_name, artist_name->valuestring, sizeof(out->artist_name) - 1);
+    strncpy(out->album_art.url, album_art_url->valuestring, sizeof(out->album_art.url) - 1);
+    out->album_art.height = album_art_h->valueint;
+    out->album_art.width = album_art_w->valueint;
 
     cJSON_Delete(root);
+    return ESP_OK;
+}
+
+esp_err_t spotify_api_fetch_album_art(const char *url, uint8_t **out_buf, size_t *out_len)
+{
+    char *response_buf = calloc(RESPONSE_BUFSZ, 1);
+    if (!response_buf)
+        return ESP_ERR_NO_MEM;
+
+    http_response_t resp = {
+        .buf = response_buf,
+        .buf_size = RESPONSE_BUFSZ,
+        .bytes_written = 0,
+    };
+
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .event_handler = art_event_handler,
+        .user_data = &resp,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client)
+    {
+        free(response_buf);
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Album art fetch failed: %s", esp_err_to_name(err));
+        free(response_buf);
+        return ESP_FAIL;
+    }
+
+    if (status != 200)
+    {
+        ESP_LOGE(TAG, "Album art fetch returned HTTP %d", status);
+        free(response_buf);
+        return ESP_FAIL;
+    }
+
+    // Shrink the allocation to exactly what was received, then hand ownership
+    // to the caller. realloc to a smaller size never fails.
+    *out_buf = (uint8_t *)realloc(response_buf, resp.bytes_written);
+    *out_len = resp.bytes_written;
     return ESP_OK;
 }
