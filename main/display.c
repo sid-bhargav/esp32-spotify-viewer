@@ -278,9 +278,9 @@ void display_fill_rect(int x, int y, int w, int h, uint32_t color)
     }
     for (int i = 0; i < w; i++)
     {
-        row[i * 3 + 0] = r;
+        row[i * 3 + 0] = b;
         row[i * 3 + 1] = g;
-        row[i * 3 + 2] = b;
+        row[i * 3 + 2] = r;
     }
 
     for (int cur_y = y; cur_y < y + h; cur_y++)
@@ -315,9 +315,9 @@ void display_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg)
         for (int col = 0; col < FONT_W; col++)
         {
             uint32_t px = (col < FONT_W - 1 && (glyph[col] & (1 << row))) ? fg : bg;
-            buf[idx++] = (px >> 16) & 0xFC;
-            buf[idx++] = (px >> 8)  & 0xFC;
             buf[idx++] =  px        & 0xFC;
+            buf[idx++] = (px >> 8)  & 0xFC;
+            buf[idx++] = (px >> 16) & 0xFC;
         }
     }
 

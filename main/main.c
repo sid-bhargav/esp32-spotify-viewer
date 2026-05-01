@@ -8,6 +8,7 @@
 #include "spotify_api.h"
 #include "display.h"
 #include "tjpgd.h"
+#include "dominant_color.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -103,7 +104,6 @@ static void display_render_playback(const spotify_playback_t *p)
 {
     if (strcmp(last_art_url, p->album_art.url) != 0)
     {
-        display_clear(COLOR_BLACK);
 
         uint8_t *jpeg_buf = NULL;
         size_t jpeg_len = 0;
@@ -116,8 +116,12 @@ static void display_render_playback(const spotify_playback_t *p)
 
             if (rgb_buf)
             {
-                display_draw_bitmap(0, 0, img_w, img_h, rgb_buf);
+                uint32_t palette[3] = {COLOR_BLACK, COLOR_BLACK, COLOR_BLACK};
+                dominant_colors(rgb_buf, img_w * img_h, palette, 3, true);
+                display_clear(palette[1]);
+                display_draw_bitmap(32, 32, img_w, img_h, rgb_buf);
                 free(rgb_buf);
+                ESP_LOGI(TAG, "Dominant Color: %d", palette[1]);
             }
         }
         else
@@ -125,9 +129,10 @@ static void display_render_playback(const spotify_playback_t *p)
             ESP_LOGE(TAG, "Error pulling album art from server.");
         }
 
-        display_draw_text(2, 68, p->track_name, COLOR_GREEN, COLOR_BLACK);
-        display_draw_text(2, 78, p->artist_name, COLOR_WHITE, COLOR_BLACK);
-        display_draw_text(2, 88, p->album_name, COLOR_GRAY, COLOR_BLACK);
+        display_fill_rect(0, 128, 128, 180 - 128, COLOR_BLACK);
+        display_draw_text(2, 130, p->track_name, COLOR_WHITE, COLOR_BLACK);
+        display_draw_text(2, 140, p->artist_name, COLOR_GRAY, COLOR_BLACK);
+        display_draw_text(2, 150, p->album_name, COLOR_GRAY, COLOR_BLACK);
     }
     strcpy(last_art_url, p->album_art.url);
 }
