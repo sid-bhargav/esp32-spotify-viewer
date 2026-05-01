@@ -19,8 +19,8 @@ static const char *TAG = "spotify_player";
 static void display_render_playback(const spotify_playback_t *p)
 {
     display_clear(COLOR_BLACK);
-    display_draw_text(2, 4, p->track_name, COLOR_WHITE, COLOR_BLACK);
-    display_draw_text(2, 14, p->artist_name, COLOR_GRAY, COLOR_BLACK);
+    display_draw_text(2, 4, p->track_name, COLOR_GREEN, COLOR_BLACK);
+    display_draw_text(2, 14, p->artist_name, COLOR_WHITE, COLOR_BLACK);
     display_draw_text(2, 24, p->album_name, COLOR_GRAY, COLOR_BLACK);
 }
 

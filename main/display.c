@@ -266,9 +266,9 @@ void display_draw_bitmap(int x, int y, int w, int h, const uint8_t *bitmap)
 // Writes one row at a time to stay within a small stack/heap footprint
 void display_fill_rect(int x, int y, int w, int h, uint32_t color)
 {
-    uint8_t r = (color >> 16) & 0xFF;
-    uint8_t g = (color >> 8) & 0xFF;
-    uint8_t b = color & 0xFF;
+    uint8_t r = (color >> 16) & 0xFC;
+    uint8_t g = (color >> 8)  & 0xFC;
+    uint8_t b =  color        & 0xFC;
 
     uint8_t *row = malloc(w * 3);
     if (!row)
@@ -315,9 +315,9 @@ void display_draw_char(int x, int y, char c, uint32_t fg, uint32_t bg)
         for (int col = 0; col < FONT_W; col++)
         {
             uint32_t px = (col < FONT_W - 1 && (glyph[col] & (1 << row))) ? fg : bg;
-            buf[idx++] = (px >> 16) & 0xFF;
-            buf[idx++] = (px >> 8) & 0xFF;
-            buf[idx++] = px & 0xFF;
+            buf[idx++] = (px >> 16) & 0xFC;
+            buf[idx++] = (px >> 8)  & 0xFC;
+            buf[idx++] =  px        & 0xFC;
         }
     }
 

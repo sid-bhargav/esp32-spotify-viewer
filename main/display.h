@@ -12,15 +12,17 @@
 
 // Colors are standard 24-bit hex codes (0xRRGGBB), the same format as web/design tools.
 // The display driver converts to 18-bit RGB666 internally when writing to the panel.
-#define COLOR_BLACK 0x1D1D16
-#define COLOR_WHITE 0xE8E8E3
-#define COLOR_GRAY 0x5B5B4B
-#define COLOR_RED 0xE11D48
-#define COLOR_GREEN 0x84cc16
-#define COLOR_BLUE 0x38bdf8
-#define COLOR_YELLOW 0xfacc15
-#define COLOR_CYAN 0x06b6d4
-#define COLOR_MAGENTA 0xDB2777
+// Tuned for the JD-T1800: compensates for its cool white point, compressed greens,
+// and tendency to oversaturate blues.
+#define COLOR_BLACK   0x141410  // Raised slightly — panel backlight lifts true black
+#define COLOR_WHITE   0xECE8DC  // Warm ivory — offsets the panel's cool white point
+#define COLOR_GRAY    0x585850  // Neutral mid-gray
+#define COLOR_RED     0xDC1840  // Pure-leaning red — panel adds slight warmth
+#define COLOR_GREEN   0x10C448  // Pushed toward pure green — panel compresses greens
+#define COLOR_BLUE    0x2498DC  // Slightly muted — panel oversaturates blues
+#define COLOR_YELLOW  0xF8C010  // Warm yellow
+#define COLOR_CYAN    0x00ACCC  // Rich cyan
+#define COLOR_MAGENTA 0xC81460  // Deep magenta
 #define RGB(r, g, b) (((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))
 
 esp_err_t display_init(void);
